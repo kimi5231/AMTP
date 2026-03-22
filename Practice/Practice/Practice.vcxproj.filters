@@ -12,10 +12,19 @@
     <Filter Include="소스 파일\2주차">
       <UniqueIdentifier>{2b671092-d477-4222-a608-54360c284a81}</UniqueIdentifier>
     </Filter>
+    <Filter Include="소스 파일\3주차">
+      <UniqueIdentifier>{16b5a9cb-9380-4f0e-9caf-017443314d78}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="2-1-1.cpp">
       <Filter>소스 파일\2주차</Filter>
+    </ClCompile>
+    <ClCompile Include="Peterson.cpp">
+      <Filter>소스 파일\3주차</Filter>
+    </ClCompile>
+    <ClCompile Include="3.cpp">
+      <Filter>소스 파일\3주차</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>
