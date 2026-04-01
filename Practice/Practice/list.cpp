@@ -3,6 +3,7 @@
 #include <vector>
 #include <chrono>
 #include <mutex>
+#include <limits>
 
 class NODE {
 	public:
@@ -14,14 +15,14 @@ class NODE {
 class DUMMY_MUTEX
 {
 public:
-	void lock();
-	void unlock();
+	void lock() {};
+	void unlock() {};
 };
 
 class FLIST {
 private:
 	NODE* head, * tail;
-	DUMMY_MUTEX mtx; // Mutex for thread safety
+	std::mutex mtx; // Mutex for thread safety
 public:
 	FLIST()
 	{
@@ -65,7 +66,7 @@ public:
 
 	bool Remove(int x)
 	{
-		mtx.lock(); // Lock the mutex to ensure thread safety
+		mtx.lock();
 		NODE* pred = head;
 		NODE* curr = pred->next;
 		while (curr->data < x) {
@@ -74,20 +75,20 @@ public:
 		}
 
 		if (curr->data != x) {
-			mtx.unlock(); // Unlock the mutex before returning
-			return false; // Element already exists
+			mtx.unlock();
+			return false;
 		}
 		else {
 			pred->next = curr->next;
 			delete curr;
-			mtx.unlock(); // Unlock the mutex after modifying the list
-			return true; // Element added successfully
+			mtx.unlock();
+			return true;
 		}
 	}
 
 	bool Contains(int x)
 	{
-		mtx.lock(); // Lock the mutex to ensure thread safety
+		mtx.lock();
 		NODE* pred = head;
 		NODE* curr = pred->next;
 		while (curr->data < x) {
@@ -96,12 +97,12 @@ public:
 		}
 
 		if (curr->data == x) {
-			mtx.unlock(); // Unlock the mutex before returning
-			return true; // Element already exists
+			mtx.unlock();
+			return true;
 		}
 		else {
-			mtx.unlock(); // Unlock the mutex after modifying the list
-			return false; // Element added successfully
+			mtx.unlock();
+			return false;
 		}
 	}
 
