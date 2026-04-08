@@ -687,18 +687,18 @@ public:
 		std::cout << "Testing Optimistic Synchronization List\n";
 		head = std::make_shared<NODE_ASP>(std::numeric_limits<int>::min());
 		tail = std::make_shared<NODE_ASP>(std::numeric_limits<int>::max());
-		head.load()->next.store(tail.load());
+		head.load()->next = tail.load();
 	}
 
 	void clear()
 	{
-		head.load()->next.store(tail.load());
+		head.load()->next = tail.load();
 	}
 
 	bool validate(const std::shared_ptr<NODE_ASP>& pred, const std::shared_ptr<NODE_ASP>& curr)
 	{
 		return (!pred->removed) && (!curr->removed)
-			&& (pred->next.load() == curr); // Check if pred still points to curr and both nodes are not removed
+			&& (pred->next.load() == curr);
 	}
 
 	bool Add(int x)
@@ -714,20 +714,20 @@ public:
 
 			pred->lock(); 	curr->lock();
 			if (false == validate(pred, curr)) {
-				pred->unlock(); curr->unlock(); // Unlock the mutex before retrying
+				pred->unlock(); curr->unlock();
 				continue;
 			}
 
 			if (curr->data == x) {
-				pred->unlock(); curr->unlock(); // Unlock the mutex before returning
-				return false; // Element already exists
+				pred->unlock(); curr->unlock();
+				return false;
 			}
 			else {
 				std::shared_ptr<NODE_ASP> new_node = std::make_shared<NODE_ASP>(x);
-				new_node->next.store(curr);
-				pred->next.store(new_node);
-				pred->unlock(); curr->unlock(); // Unlock the mutex after modifying the list
-				return true; // Element added successfully
+				new_node->next = curr;
+				pred->next = new_node;
+				pred->unlock(); curr->unlock();
+				return true; 
 			}
 		}
 	}
@@ -745,18 +745,18 @@ public:
 
 			pred->lock(); 	curr->lock();
 			if (false == validate(pred, curr)) {
-				pred->unlock(); curr->unlock(); // Unlock the mutex before retrying
+				pred->unlock(); curr->unlock();
 				continue;
 			}
 			if (curr->data != x) {
-				pred->unlock(); curr->unlock(); // Unlock the mutex before returning
-				return false; // Element already exists
+				pred->unlock(); curr->unlock();
+				return false;
 			}
 			else {
 				curr->removed = true;
-				pred->next.store(curr->next.load());
-				pred->unlock(); curr->unlock(); // Unlock the mutex after modifying the list
-				return true; // Element added successfully
+				pred->next = curr->next.load();
+				pred->unlock(); curr->unlock();
+				return true;
 			}
 		}
 	}
@@ -783,7 +783,7 @@ public:
 	}
 };
 
-ZLIST_ASP my_set;
+FLIST my_set;
 
 #include <array>
 
