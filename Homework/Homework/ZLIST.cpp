@@ -9,8 +9,6 @@ constexpr int MAX_THREADS = 16;
 constexpr int NUM_TEST = 400'0000;
 constexpr int RANGE = 1000;
 
-
-
 class NODE {
 public:
 	int data;
@@ -672,7 +670,7 @@ public:
 class NODE_ASP {
 public:
 	int data;
-	std::atomic<std::shared_ptr <NODE_ASP>> next;
+	std::atomic<std::shared_ptr<NODE_ASP>> next;
 	bool removed = false; // Flag to indicate if the node is removed
 	std::mutex mtx; // Mutex for thread safety
 	NODE_ASP(int value) : data(value), next(nullptr) {}
@@ -689,45 +687,46 @@ public:
 		std::cout << "Testing Optimistic Synchronization List\n";
 		head = std::make_shared<NODE_ASP>(std::numeric_limits<int>::min());
 		tail = std::make_shared<NODE_ASP>(std::numeric_limits<int>::max());
-		head.load()->next = tail.load();
+		head.load()->next.store(tail.load());
 	}
 
 	void clear()
 	{
-		head.load()->next = tail.load();
+		head.load()->next.store(tail.load());
 	}
 
-	bool validate(const std::atomic<std::shared_ptr<NODE_ASP>>& pred, const std::atomic<std::shared_ptr<NODE_ASP>>& curr)
+	bool validate(const std::shared_ptr<NODE_ASP>& pred, const std::shared_ptr<NODE_ASP>& curr)
 	{
-		return (!pred.load()->removed) && (!curr.load()->removed)
-			&& (pred.load()->next == curr.z); // Check if pred still points to curr and both nodes are not removed
+		return (!pred->removed) && (!curr->removed)
+			&& (pred->next.load() == curr); // Check if pred still points to curr and both nodes are not removed
 	}
 
 	bool Add(int x)
 	{
 		while (true) {
-			std::atomic<std::shared_ptr<NODE_ASP>> pred = head.load();
-			std::atomic<std::shared_ptr<NODE_ASP>> curr = pred.load()->next;
-			while (curr.load()->data < x) {
-				pred.load() = curr.load();
-				curr.load() = curr.load()->next;
+			std::shared_ptr<NODE_ASP> pred = head.load();
+			std::shared_ptr<NODE_ASP> curr = pred->next.load();
+			while (curr->data < x) {
+				
+				pred = curr;
+				curr = curr->next.load();
 			}
 
-			pred.load()->lock(); 	curr.load()->lock();
+			pred->lock(); 	curr->lock();
 			if (false == validate(pred, curr)) {
-				pred.load()->unlock(); curr.load()->unlock(); // Unlock the mutex before retrying
+				pred->unlock(); curr->unlock(); // Unlock the mutex before retrying
 				continue;
 			}
 
-			if (curr.load()->data == x) {
-				pred.load()->unlock(); curr.load()->unlock(); // Unlock the mutex before returning
+			if (curr->data == x) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before returning
 				return false; // Element already exists
 			}
 			else {
-				std::atomic<std::shared_ptr<NODE_ASP>> new_node = std::make_shared<NODE_ASP>(x);
-				new_node.load()->next = curr.load();
-				pred.load()->next = new_node.load();
-				pred.load()->unlock(); curr.load()->unlock(); // Unlock the mutex after modifying the list
+				std::shared_ptr<NODE_ASP> new_node = std::make_shared<NODE_ASP>(x);
+				new_node->next.store(curr);
+				pred->next.store(new_node);
+				pred->unlock(); curr->unlock(); // Unlock the mutex after modifying the list
 				return true; // Element added successfully
 			}
 		}
@@ -736,26 +735,27 @@ public:
 	bool Remove(int x)
 	{
 		while (true) {
-			std::atomic<std::shared_ptr<NODE_ASP>> pred = head.load();
-			std::atomic<std::shared_ptr<NODE_ASP>> curr = pred.load()->next;
-			while (curr.load()->data < x) {
-				pred = curr.load();
-				curr.load() = curr.load()->next;
+			std::shared_ptr<NODE_ASP> pred = head.load();
+			std::shared_ptr<NODE_ASP> curr = pred->next.load();
+			while (curr->data < x) {
+
+				pred = curr;
+				curr = curr->next.load();
 			}
 
-			pred.load()->lock(); 	curr.load()->lock();
+			pred->lock(); 	curr->lock();
 			if (false == validate(pred, curr)) {
-				pred.load()->unlock(); curr.load()->unlock(); // Unlock the mutex before retrying
+				pred->unlock(); curr->unlock(); // Unlock the mutex before retrying
 				continue;
 			}
-			if (curr.load()->data != x) {
-				pred.load()->unlock(); curr.load()->unlock(); // Unlock the mutex before returning
+			if (curr->data != x) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before returning
 				return false; // Element already exists
 			}
 			else {
-				curr.load()->removed = true;
-				pred.load()->next = curr.load()->next;
-				pred.load()->unlock(); curr.load()->unlock(); // Unlock the mutex after modifying the list
+				curr->removed = true;
+				pred->next.store(curr->next.load());
+				pred->unlock(); curr->unlock(); // Unlock the mutex after modifying the list
 				return true; // Element added successfully
 			}
 		}
@@ -763,39 +763,27 @@ public:
 
 	bool Contains(int x)
 	{
-		while (true) {
-			std::atomic<std::shared_ptr<NODE_ASP>> pred = head.load();
-			std::atomic<std::shared_ptr<NODE_ASP>> curr = pred.load()->next;
-			while (curr.load()->data < x) {
-				pred = curr.load();
-				curr.load() = curr.load()->next;
-			}
-
-			if (false == validate(pred, curr)) {
-				continue;
-			}
-
-			if (curr.load()->data == x && !curr.load()->removed)
-				return true;
-			else
-				return false;
+		std::shared_ptr<NODE_ASP> n = head.load();
+		while (n->data < x) {
+			n = n->next;
 		}
+		return (n->data == x) && (!n->removed);
 	}
 
 	void print20()
 	{
-		std::atomic<std::shared_ptr<NODE_ASP>> curr = head.load()->next;
+		std::shared_ptr<NODE_ASP> curr = head.load()->next.load();
 		int count = 0;
-		while (curr.load() != tail.load() && count < 20) {
-			std::cout << curr.load()->data << ", ";
-			curr.load() = curr.load()->next;
+		while (curr != tail.load() && count < 20) {
+			std::cout << curr->data << ", ";
+			curr = curr->next.load();
 			count++;
 		}
 		std::cout << "\n";
 	}
 };
 
-ZLIST_SP my_set;
+ZLIST_ASP my_set;
 
 #include <array>
 
