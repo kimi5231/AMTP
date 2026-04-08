@@ -20,7 +20,10 @@
     <ClCompile Include="Homework4.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
-    <ClCompile Include="ZLIST.cpp">
+    <ClCompile Include="Homework8.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="Homework7.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
   </ItemGroup>
