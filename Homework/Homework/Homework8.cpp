@@ -783,7 +783,7 @@ public:
 	}
 };
 
-FLIST my_set;
+ZLIST_ASP my_set;
 
 #include <array>
 
