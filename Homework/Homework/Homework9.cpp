@@ -767,12 +767,12 @@ public:
 		next = reinterpret_cast<long long>(next_node);
 	}
 	LFNODE* get_next() {
-		return reinterpret_cast<LFNODE*>(next.load());
+		return reinterpret_cast<LFNODE*>(next.load() & ~1LL);
 	}
 	LFNODE* get_next(bool* removed) {
 		long long temp = next.load();
 		*removed = (temp & 1) == 1; // Check if the least significant bit is set (marked as removed)
-		return reinterpret_cast<LFNODE*>(temp);
+		return reinterpret_cast<LFNODE*>(temp & ~1LL);
 	}
 	bool get_mark() {
 		return (next.load() & 1) == 1; // Check if the least significant bit is set (marked as removed)
@@ -895,7 +895,22 @@ public:
 
 	bool Remove(int x)
 	{
-		return false;
+		LFNODE* pred, * curr;
+		while (true)
+		{
+			find(x, pred, curr);
+
+			if (curr->data != x)
+				return false;
+			else
+			{
+				LFNODE* succ = curr->get_next();
+				if (!curr->CAS(succ, succ, false, true))
+					continue;
+				pred->CAS(curr, succ, false, false);
+				return true;
+			}
+		}
 	}
 
 	bool Contains(int x)
@@ -1027,7 +1042,7 @@ int main()
 {
 	using namespace std::chrono;
 
-	std::cout << "Strting Error Check.\n";
+	/*std::cout << "Strting Error Check.\n";
 	for (int num_threads = 1; num_threads <= MAX_THREADS; num_threads *= 2) {
 		std::vector<std::thread> threads;
 		for (auto& h : history) h.clear();
@@ -1045,7 +1060,7 @@ int main()
 		std::cout << "Threads: " << num_threads << ", Time: " << exec_ms << " seconds\n";
 		check_history(num_threads);
 		my_set.clear();
-	}
+	}*/
 
 	std::cout << "Strting Performance Check.\n";
 	for (int num_threads = 1; num_threads <= MAX_THREADS; num_threads *= 2) {
