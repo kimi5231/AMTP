@@ -865,10 +865,11 @@ public:
 		while (true) {
 			// Check if curr is marked as removed
 			bool removed = false;
+			retry:
 			while (true) {
 				LFNODE* succ = curr->get_next(&removed);
 				if (false == removed) break; // If curr is not removed, break the inner loop
-				pred->CAS(curr, succ, false, false);
+				if (false == pred->CAS(curr, succ, false, false)) goto retry;
 				curr = succ;
 			}
 			if (curr->data >= x) break;
@@ -907,7 +908,8 @@ public:
 				LFNODE* succ = curr->get_next();
 				if (!curr->CAS(succ, succ, false, true))
 					continue;
-				pred->CAS(curr, succ, false, false);
+				if (pred->CAS(curr, succ, false, false))
+					lf_memory_pool[thread_id].free_node(curr);
 				return true;
 			}
 		}
@@ -1042,7 +1044,7 @@ int main()
 {
 	using namespace std::chrono;
 
-	/*std::cout << "Strting Error Check.\n";
+	std::cout << "Strting Error Check.\n";
 	for (int num_threads = 1; num_threads <= MAX_THREADS; num_threads *= 2) {
 		std::vector<std::thread> threads;
 		for (auto& h : history) h.clear();
@@ -1060,7 +1062,7 @@ int main()
 		std::cout << "Threads: " << num_threads << ", Time: " << exec_ms << " seconds\n";
 		check_history(num_threads);
 		my_set.clear();
-	}*/
+	}
 
 	std::cout << "Strting Performance Check.\n";
 	for (int num_threads = 1; num_threads <= MAX_THREADS; num_threads *= 2) {
