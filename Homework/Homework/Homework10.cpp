@@ -4,23 +4,19 @@
 #include <chrono>
 #include <mutex>
 #include <queue>
-#include <atomic>
-#include <limits>
-#include <array>
-#include <algorithm>
 
 constexpr int MAX_THREADS = 16;
 constexpr int NUM_TEST = 400'0000;
 constexpr int RANGE = 1000;
 
-// --- 공통 노드 및 메모리 풀 구조 ---
+
 
 class NODE {
 public:
 	int data;
 	NODE* next;
-	bool removed = false;
-	std::mutex mtx;
+	bool removed = false; // Flag to indicate if the node is removed
+	std::mutex mtx; // Mutex for thread safety
 	NODE(int value) : data(value), next(nullptr) {}
 	void lock() { mtx.lock(); }
 	void unlock() { mtx.unlock(); }
@@ -31,158 +27,1060 @@ private:
 	std::queue<NODE*> get_pool;
 	std::queue<NODE*> free_pool;
 public:
-	NODE* get_node(int value) {
-		if (get_pool.empty()) return new NODE(value);
-		NODE* node = get_pool.front(); get_pool.pop();
-		node->data = value; node->next = nullptr; node->removed = false;
-		return node;
+	MEMORY_POOL()
+	{
+		//for (int i = 0; i < NUM_TEST / 3; ++i) {
+		//	get_pool.push(new NODE(0));
+		//}
 	}
-	void free_node(NODE* node) { free_pool.push(node); }
-	void recycle_nodes() { while (!free_pool.empty()) { get_pool.push(free_pool.front()); free_pool.pop(); } }
+	~MEMORY_POOL() {
+		while (!get_pool.empty()) {
+			delete get_pool.front();
+			get_pool.pop();
+		}
+		while (!free_pool.empty()) {
+			delete free_pool.front();
+			free_pool.pop();
+		}
+	}
+
+	NODE* get_node(int value) {
+		if (get_pool.empty()) {
+			return new NODE(value);
+		}
+		else {
+			NODE* node = get_pool.front();
+			get_pool.pop();
+			node->data = value;
+			node->next = nullptr;
+			node->removed = false;
+			return node;
+		}
+	}
+	void free_node(NODE* node) {
+		free_pool.push(node);
+	}
+	void recycle_nodes() {
+		get_pool = std::move(free_pool);
+	}
 };
 
-MEMORY_POOL memory_pool[MAX_THREADS + 1];
-thread_local int thread_id = MAX_THREADS; // 기본값은 메인 스레드용
+MEMORY_POOL memory_pool[MAX_THREADS];
+thread_local int thread_id = 999;
 
-// --- Lock-Free를 위한 노드 (LFNODE) ---
+class DUMMY_MUTEX {
+public:
+	void lock() {}
+	void unlock() {}
+};
+
+class CLIST {
+private:
+	NODE* head, * tail;
+	std::mutex mtx; // Mutex for thread safety
+public:
+	CLIST()
+	{
+		std::cout << "Testing Course Grain Synchronization List\n";
+		head = new NODE{ std::numeric_limits<int>::min() };
+		tail = new NODE{ std::numeric_limits<int>::max() };
+		head->next = tail;
+	}
+
+	void clear()
+	{
+		NODE* current = head->next;
+		while (head->next != tail) {
+			NODE* temp = head->next;
+			head->next = temp->next;
+			delete temp;
+		}
+	}
+
+	bool Add(int x)
+	{
+		mtx.lock(); // Lock the mutex to ensure thread safety
+		NODE* pred = head;
+		NODE* curr = pred->next;
+		while (curr->data < x) {
+			pred = curr;
+			curr = curr->next;
+		}
+
+		if (curr->data == x) {
+			mtx.unlock(); // Unlock the mutex before returning
+			return false; // Element already exists
+		}
+		else {
+			NODE* new_node = memory_pool[thread_id].get_node(x);
+			pred->next = new_node;
+			new_node->next = curr;
+			mtx.unlock(); // Unlock the mutex after modifying the list
+			return true; // Element added successfully
+		}
+	}
+
+	bool Remove(int x)
+	{
+
+		mtx.lock(); // Lock the mutex to ensure thread safety
+		NODE* pred = head;
+		NODE* curr = pred->next;
+		while (curr->data < x) {
+			pred = curr;
+			curr = curr->next;
+		}
+
+		if (curr->data != x) {
+			mtx.unlock(); // Unlock the mutex before returning
+			return false; // Element already exists
+		}
+		else {
+			pred->next = curr->next;
+			memory_pool[thread_id].free_node(curr); // Recycle the removed node back to the memory pool
+			mtx.unlock(); // Unlock the mutex after modifying the list
+			return true; // Element added successfully
+		}
+	}
+
+	bool Contains(int x)
+	{
+
+		mtx.lock(); // Lock the mutex to ensure thread safety
+		NODE* pred = head;
+		NODE* curr = pred->next;
+		while (curr->data < x) {
+			pred = curr;
+			curr = curr->next;
+		}
+
+		if (curr->data == x) {
+			mtx.unlock(); // Unlock the mutex before returning
+			return true; // Element already exists
+		}
+		else {
+			mtx.unlock(); // Unlock the mutex after modifying the list
+			return false; // Element added successfully
+		}
+	}
+
+	void print20()
+	{
+		NODE* curr = head->next;
+		int count = 0;
+		while (curr != tail && count < 20) {
+			std::cout << curr->data << ", ";
+			curr = curr->next;
+			count++;
+		}
+		std::cout << "\n";
+	}
+};
+
+class FLIST {
+private:
+	NODE* head, * tail;
+public:
+	FLIST()
+	{
+		std::cout << "Testing Fine Grain Synchronization List\n";
+		head = new NODE{ std::numeric_limits<int>::min() };
+		tail = new NODE{ std::numeric_limits<int>::max() };
+		head->next = tail;
+	}
+
+	void clear()
+	{
+		NODE* current = head->next;
+		while (head->next != tail) {
+			NODE* temp = head->next;
+			head->next = temp->next;
+			delete temp;
+		}
+	}
+
+	bool Add(int x)
+	{
+		head->lock();
+		NODE* pred = head;
+		NODE* curr = pred->next;
+		curr->lock();
+		while (curr->data < x) {
+			pred->unlock();
+			pred = curr;
+			curr = curr->next;
+			curr->lock();
+		}
+
+		if (curr->data == x) {
+			pred->unlock(); curr->unlock(); // Unlock the mutex before returning
+			return false; // Element already exists
+		}
+		else {
+			NODE* new_node = new NODE{ x };
+			new_node->next = curr;
+			pred->next = new_node;
+			pred->unlock(); curr->unlock(); // Unlock the mutex after modifying the list
+			return true; // Element added successfully
+		}
+	}
+
+	bool Remove(int x)
+	{
+		head->lock();
+		NODE* pred = head;
+		NODE* curr = pred->next;
+		curr->lock();
+		while (curr->data < x) {
+			pred->unlock();
+			pred = curr;
+			curr = curr->next;
+			curr->lock();
+		}
+
+		if (curr->data != x) {
+			pred->unlock(); curr->unlock(); // Unlock the mutex before returning
+			return false; // Element already exists
+		}
+		else {
+			pred->next = curr->next;
+			pred->unlock(); curr->unlock(); // Unlock the mutex after modifying the list
+			delete curr;
+			return true; // Element added successfully
+		}
+	}
+
+	bool Contains(int x)
+	{
+		head->lock();
+		NODE* pred = head;
+		NODE* curr = pred->next;
+		curr->lock();
+		while (curr->data < x) {
+			pred->unlock();
+			pred = curr;
+			curr = curr->next;
+			curr->lock();
+		}
+
+		if (curr->data == x) {
+			pred->unlock(); curr->unlock(); // Unlock the mutex before returning
+			return true; // Element already exists
+		}
+		else {
+			pred->unlock(); curr->unlock(); // Unlock the mutex after modifying the list
+			return false; // Element added successfully
+		}
+	}
+
+	void print20()
+	{
+		NODE* curr = head->next;
+		int count = 0;
+		while (curr != tail && count < 20) {
+			std::cout << curr->data << ", ";
+			curr = curr->next;
+			count++;
+		}
+		std::cout << "\n";
+	}
+};
+
+class OLIST {
+private:
+	NODE* head, * tail;
+public:
+	OLIST()
+	{
+		std::cout << "Testing Optimistic Synchronization List\n";
+		head = new NODE{ std::numeric_limits<int>::min() };
+		tail = new NODE{ std::numeric_limits<int>::max() };
+		head->next = tail;
+	}
+
+	void clear()
+	{
+		NODE* current = head->next;
+		while (head->next != tail) {
+			NODE* temp = head->next;
+			head->next = temp->next;
+			delete temp;
+		}
+	}
+
+	bool validate(NODE* pred, NODE* curr)
+	{
+		NODE* node = head;
+		while (node->data <= pred->data) {
+			if (node == pred) {
+				return pred->next == curr; // Check if pred still points to curr
+			}
+			node = node->next;
+		}
+		return false; // Validation failed
+	}
+
+	bool Add(int x)
+	{
+		while (true) {
+			NODE* pred = head;
+			NODE* curr = pred->next;
+			while (curr->data < x) {
+				pred = curr;
+				curr = curr->next;
+			}
+
+			pred->lock(); 	curr->lock();
+			if (false == validate(pred, curr)) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before retrying
+				continue;
+			}
+
+			if (curr->data == x) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before returning
+				return false; // Element already exists
+			}
+			else {
+				NODE* new_node = memory_pool[thread_id].get_node(x);
+				new_node->next = curr;
+				pred->next = new_node;
+				pred->unlock(); curr->unlock(); // Unlock the mutex after modifying the list
+				return true; // Element added successfully
+			}
+		}
+	}
+
+	bool Remove(int x)
+	{
+		while (true) {
+			NODE* pred = head;
+			NODE* curr = pred->next;
+			while (curr->data < x) {
+				pred = curr;
+				curr = curr->next;
+			}
+
+			pred->lock(); 	curr->lock();
+			if (false == validate(pred, curr)) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before retrying
+				continue;
+			}
+			if (curr->data != x) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before returning
+				return false; // Element already exists
+			}
+			else {
+				pred->next = curr->next;
+				pred->unlock(); curr->unlock(); // Unlock the mutex after modifying the list
+				memory_pool[thread_id].free_node(curr); // Recycle the removed node back to the memory pool
+				return true; // Element added successfully
+			}
+		}
+	}
+
+	bool Contains(int x)
+	{
+		while (true) {
+			NODE* pred = head;
+			NODE* curr = pred->next;
+			while (curr->data < x) {
+				pred = curr;
+				curr = curr->next;
+			}
+
+			pred->lock(); 	curr->lock();
+			if (false == validate(pred, curr)) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before retrying
+				continue;
+			}
+
+			if (curr->data == x) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before returning
+				return true; // Element already exists
+			}
+			else {
+				pred->unlock(); curr->unlock(); // Unlock the mutex after modifying the list
+				return false; // Element added successfully
+			}
+		}
+	}
+
+	void print20()
+	{
+		NODE* curr = head->next;
+		int count = 0;
+		while (curr != tail && count < 20) {
+			std::cout << curr->data << ", ";
+			curr = curr->next;
+			count++;
+		}
+		std::cout << "\n";
+	}
+};
+
+class ZLIST {
+private:
+	NODE* head, * tail;
+public:
+	ZLIST()
+	{
+		std::cout << "Testing Optimistic Synchronization List\n";
+		head = new NODE{ std::numeric_limits<int>::min() };
+		tail = new NODE{ std::numeric_limits<int>::max() };
+		head->next = tail;
+	}
+
+	void clear()
+	{
+		NODE* current = head->next;
+		while (head->next != tail) {
+			NODE* temp = head->next;
+			head->next = temp->next;
+			delete temp;
+		}
+	}
+
+	bool validate(NODE* pred, NODE* curr)
+	{
+		return (!pred->removed) && (!curr->removed)
+			&& (pred->next == curr); // Check if pred still points to curr and both nodes are not removed
+	}
+
+	bool Add(int x)
+	{
+		NODE* new_node = memory_pool[thread_id].get_node(x);
+		while (true) {
+			NODE* pred = head;
+			NODE* curr = pred->next;
+			while (curr->data < x) {
+				pred = curr;
+				curr = curr->next;
+			}
+
+			pred->lock(); 	curr->lock();
+			if (false == validate(pred, curr)) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before retrying
+				continue;
+			}
+
+			if (curr->data == x) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before returning
+				memory_pool[thread_id].free_node(new_node); // Recycle the unused node back to the memory pool
+				return false; // Element already exists
+			}
+			else {
+				new_node->next = curr;
+				pred->next = new_node;
+				pred->unlock(); curr->unlock(); // Unlock the mutex after modifying the list
+				return true; // Element added successfully
+			}
+		}
+	}
+
+	bool Remove(int x)
+	{
+		while (true) {
+			NODE* pred = head;
+			NODE* curr = pred->next;
+			while (curr->data < x) {
+				pred = curr;
+				curr = curr->next;
+			}
+
+			pred->lock(); 	curr->lock();
+			if (false == validate(pred, curr)) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before retrying
+				continue;
+			}
+			if (curr->data != x) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before returning
+				return false; // Element already exists
+			}
+			else {
+				curr->removed = true; // Mark the node as removed
+				pred->next = curr->next;
+				pred->unlock(); curr->unlock(); // Unlock the mutex after modifying the list
+				memory_pool[thread_id].free_node(curr); // Recycle the removed node back to the memory pool
+				return true; // Element added successfully
+			}
+		}
+	}
+
+	bool Contains(int x)
+	{
+		NODE* n = head;
+		while (n->data < x) {
+			n = n->next;
+		}
+		return (n->data == x) && (!n->removed); // Check if the node exists and is not removed
+	}
+
+	void print20()
+	{
+		NODE* curr = head->next;
+		int count = 0;
+		while (curr != tail && count < 20) {
+			std::cout << curr->data << ", ";
+			curr = curr->next;
+			count++;
+		}
+		std::cout << "\n";
+	}
+};
+
+class NODE_SP {
+public:
+	int data;
+	std::shared_ptr<NODE_SP> next;
+	bool removed = false; // Flag to indicate if the node is removed
+	std::mutex mtx; // Mutex for thread safety
+	NODE_SP(int value) : data(value), next(nullptr) {}
+	void lock() { mtx.lock(); }
+	void unlock() { mtx.unlock(); }
+};
+
+class ZLIST_SP {
+private:
+	std::shared_ptr<NODE_SP> head, tail;
+public:
+	ZLIST_SP()
+	{
+		std::cout << "Testing Optimistic Synchronization List\n";
+		head = std::make_shared<NODE_SP>(std::numeric_limits<int>::min());
+		tail = std::make_shared<NODE_SP>(std::numeric_limits<int>::max());
+		head->next = tail;
+	}
+
+	void clear()
+	{
+		head->next = tail; // Reset the list to its initial state
+	}
+
+	bool validate(const std::shared_ptr<NODE_SP>& pred,
+		const std::shared_ptr<NODE_SP>& curr)
+	{
+		return (!pred->removed) && (!curr->removed)
+			&& (pred->next == curr); // Check if pred still points to curr and both nodes are not removed
+	}
+
+	bool Add(int x)
+	{
+		std::shared_ptr<NODE_SP> new_node = std::make_shared<NODE_SP>(x);
+		while (true) {
+			std::shared_ptr<NODE_SP> pred = head;
+			std::shared_ptr<NODE_SP> curr = pred->next;
+			while (curr->data < x) {
+				pred = curr;
+				curr = curr->next;
+			}
+
+			pred->lock(); 	curr->lock();
+			if (false == validate(pred, curr)) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before retrying
+				continue;
+			}
+
+			if (curr->data == x) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before returning
+				return false; // Element already exists
+			}
+			else {
+				new_node->next = curr;
+				pred->next = new_node;
+				pred->unlock(); curr->unlock(); // Unlock the mutex after modifying the list
+				return true; // Element added successfully
+			}
+		}
+	}
+
+	bool Remove(int x)
+	{
+		while (true) {
+			std::shared_ptr<NODE_SP> pred = head;
+			std::shared_ptr<NODE_SP> curr = pred->next;
+			while (curr->data < x) {
+				pred = curr;
+				curr = curr->next;
+			}
+
+			pred->lock(); 	curr->lock();
+			if (false == validate(pred, curr)) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before retrying
+				continue;
+			}
+			if (curr->data != x) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before returning
+				return false; // Element already exists
+			}
+			else {
+				curr->removed = true; // Mark the node as removed
+				pred->next = curr->next;
+				pred->unlock(); curr->unlock(); // Unlock the mutex after modifying the list
+				return true; // Element added successfully
+			}
+		}
+	}
+
+	bool Contains(int x)
+	{
+		std::shared_ptr<NODE_SP> n = head;
+		while (n->data < x) {
+			n = n->next;
+		}
+		return (n->data == x) && (!n->removed); // Check if the node exists and is not removed
+	}
+
+	void print20()
+	{
+		std::shared_ptr<NODE_SP> curr = head->next;
+		int count = 0;
+		while (curr != tail && count < 20) {
+			std::cout << curr->data << ", ";
+			curr = curr->next;
+			count++;
+		}
+		std::cout << "\n";
+	}
+};
+
+class NODE_ASP {
+public:
+	int data;
+	std::atomic<std::shared_ptr<NODE_ASP>> next;
+	bool removed = false; // Flag to indicate if the node is removed
+	std::mutex mtx; // Mutex for thread safety
+	NODE_ASP(int value) : data(value), next(nullptr) {}
+	void lock() { mtx.lock(); }
+	void unlock() { mtx.unlock(); }
+};
+
+class ZLIST_ASP {
+private:
+	std::atomic<std::shared_ptr<NODE_ASP>> head, tail;
+public:
+	ZLIST_ASP()
+	{
+		std::cout << "Testing Optimistic Synchronization List\n";
+		head = std::make_shared<NODE_ASP>(std::numeric_limits<int>::min());
+		tail = std::make_shared<NODE_ASP>(std::numeric_limits<int>::max());
+		head.load()->next = tail.load();
+	}
+
+	void clear()
+	{
+		head.load()->next = tail.load(); // Reset the list to its initial state
+	}
+
+	bool validate(const std::shared_ptr<NODE_ASP>& pred,
+		const std::shared_ptr<NODE_ASP>& curr)
+	{
+		return (!pred->removed) && (!curr->removed)
+			&& (pred->next.load() == curr); // Check if pred still points to curr and both nodes are not removed
+	}
+
+	bool Add(int x)
+	{
+		std::shared_ptr<NODE_ASP> new_node = std::make_shared<NODE_ASP>(x);
+		while (true) {
+			std::shared_ptr<NODE_ASP> pred = head;
+			std::shared_ptr<NODE_ASP> curr = pred->next;
+			while (curr->data < x) {
+				pred = curr;
+				curr = curr->next;
+			}
+
+			pred->lock(); 	curr->lock();
+			if (false == validate(pred, curr)) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before retrying
+				continue;
+			}
+
+			if (curr->data == x) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before returning
+				return false; // Element already exists
+			}
+			else {
+				new_node->next = curr;
+				pred->next = new_node;
+				pred->unlock(); curr->unlock(); // Unlock the mutex after modifying the list
+				return true; // Element added successfully
+			}
+		}
+	}
+
+	bool Remove(int x)
+	{
+		while (true) {
+			std::shared_ptr<NODE_ASP> pred = head;
+			std::shared_ptr<NODE_ASP> curr = pred->next;
+			while (curr->data < x) {
+				pred = curr;
+				curr = curr->next;
+			}
+
+			pred->lock(); 	curr->lock();
+			if (false == validate(pred, curr)) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before retrying
+				continue;
+			}
+			if (curr->data != x) {
+				pred->unlock(); curr->unlock(); // Unlock the mutex before returning
+				return false; // Element already exists
+			}
+			else {
+				curr->removed = true; // Mark the node as removed
+				pred->next = curr->next.load();
+				pred->unlock(); curr->unlock(); // Unlock the mutex after modifying the list
+				return true; // Element added successfully
+			}
+		}
+	}
+
+	bool Contains(int x)
+	{
+		std::shared_ptr<NODE_ASP> n = head;
+		while (n->data < x) {
+			n = n->next;
+		}
+		return (n->data == x) && (!n->removed); // Check if the node exists and is not removed
+	}
+
+	void print20()
+	{
+		std::shared_ptr<NODE_ASP> curr = head.load()->next;
+		int count = 0;
+		while (curr != tail.load() && count < 20) {
+			std::cout << curr->data << ", ";
+			curr = curr->next;
+			count++;
+		}
+		std::cout << "\n";
+	}
+};
 
 class LFNODE {
 	std::atomic_llong next;
 public:
 	int data;
 	long long epoch;
-	LFNODE(int value) : data(value), next(0), epoch(0) {}
-	void set_next(LFNODE* next_node) { next = reinterpret_cast<long long>(next_node); }
-	LFNODE* get_next() { return reinterpret_cast<LFNODE*>(next.load() & ~3LL); }
+	LFNODE(int value) : data(value), next(0) {}
+	void set_next(LFNODE* next_node) {
+		next = reinterpret_cast<long long>(next_node);
+	}
+	LFNODE* get_next() {
+		return reinterpret_cast<LFNODE*>(next.load() & 0xFFFFFFFFFFFFFFFC);
+	}
 	LFNODE* get_next(bool* removed) {
 		long long temp = next.load();
-		*removed = (temp & 1) == 1;
-		return reinterpret_cast<LFNODE*>(temp & ~3LL);
+		*removed = (temp & 1) == 1; // Check if the least significant bit is set (marked as removed)
+		return reinterpret_cast<LFNODE*>(temp & 0xFFFFFFFFFFFFFFFC);
 	}
-	bool get_mark() { return (next.load() & 1) == 1; }
-	bool CAS(LFNODE* exp_node, LFNODE* new_node, bool exp_rem, bool new_rem) {
-		long long exp_val = reinterpret_cast<long long>(exp_node) | (exp_rem ? 1 : 0);
-		long long new_val = reinterpret_cast<long long>(new_node) | (new_rem ? 1 : 0);
-		return next.compare_exchange_strong(exp_val, new_val);
+	bool get_mark() {
+		return (next.load() & 1) == 1; // Check if the least significant bit is set (marked as removed)
+	}
+	bool CAS(LFNODE* expected_node, LFNODE* new_node,
+		bool expected_removed, bool new_removed)
+	{
+		long long expected_value = reinterpret_cast<long long>(expected_node) | (expected_removed ? 1 : 0);
+		long long new_value = reinterpret_cast<long long>(new_node) | (new_removed ? 1 : 0);
+		return next.compare_exchange_strong(expected_value, new_value);
 	}
 };
 
-// --- EBR (Epoch Based Reclamation) 구현 ---
+class LF_MEMORY_POOL {
+private:
+	std::queue<LFNODE*> get_pool;
+	std::queue<LFNODE*> free_pool;
+public:
+	LF_MEMORY_POOL()
+	{
+		//for (int i = 0; i < NUM_TEST / 3; ++i) {
+		//	get_pool.push(new NODE(0));
+		//}
+	}
+	~LF_MEMORY_POOL() {
+		while (!get_pool.empty()) {
+			delete get_pool.front();
+			get_pool.pop();
+		}
+		while (!free_pool.empty()) {
+			delete free_pool.front();
+			free_pool.pop();
+		}
+	}
+
+	LFNODE* get_node(int value) {
+		if (get_pool.empty()) {
+			return new LFNODE(value);
+		}
+		else {
+			LFNODE* node = get_pool.front();
+			get_pool.pop();
+			node->data = value;
+			node->set_next(nullptr);
+			return node;
+		}
+	}
+	void free_node(LFNODE* node) {
+		free_pool.push(node);
+	}
+	void recycle_nodes() {
+		get_pool = std::move(free_pool);
+	}
+};
+
+LF_MEMORY_POOL lf_memory_pool[MAX_THREADS];
 
 class EBR {
-	alignas(64) std::atomic_llong g_epoch{ 0 };
-	struct ThreadInfo {
-		alignas(64) std::atomic_llong local_epoch{ std::numeric_limits<long long>::max() };
+	alignas(64) std::atomic_llong g_epoch = 0;
+	class ThreadInfo {
+	public:
+		alignas(64) std::atomic_llong local_epoch;
 		std::queue<LFNODE*> free_nodes;
+		ThreadInfo() {
+			local_epoch = std::numeric_limits<long long>::max(); // Initialize local_epoch to a value that indicates the thread is not active in any epoch
+		}
+		~ThreadInfo() {
+			while (!free_nodes.empty()) {
+				delete free_nodes.front();
+				free_nodes.pop();
+			}
+		}
 	};
-	ThreadInfo thread_info[MAX_THREADS + 1];
-
+	ThreadInfo thread_info[MAX_THREADS];
 public:
 	void enter() {
-		thread_info[thread_id].local_epoch.store(g_epoch.load());
+		thread_info[thread_id].local_epoch = ++g_epoch; // Mark the thread as active in the current global epoch
 	}
 	void leave() {
-		thread_info[thread_id].local_epoch.store(std::numeric_limits<long long>::max());
+		thread_info[thread_id].local_epoch = std::numeric_limits<long long>::max(); // Mark the thread as inactive by setting local_epoch to a value that indicates it is not active in any epoch
 	}
 	void freenode(LFNODE* node) {
-		node->epoch = g_epoch.load();
-		thread_info[thread_id].free_nodes.push(node);
-		if (thread_info[thread_id].free_nodes.size() % 100 == 0) g_epoch.fetch_add(1);
+		node->epoch = g_epoch; // Set the node's epoch to the current global epoch
+		thread_info[thread_id].free_nodes.push(node); // Add the node to the thread's free list
 	}
 	LFNODE* getnode(int x) {
-		if (thread_info[thread_id].free_nodes.empty()) return new LFNODE(x);
-		LFNODE* node = thread_info[thread_id].free_nodes.front();
-		for (int i = 0; i <= MAX_THREADS; ++i) {
-			if (thread_info[i].local_epoch.load() <= node->epoch) return new LFNODE(x);
+		if (thread_info[thread_id].free_nodes.empty()) {
+			return new LFNODE(x); // No nodes available for reuse
 		}
-		thread_info[thread_id].free_nodes.pop();
-		node->data = x;
-		node->set_next(nullptr);
-		return node;
+		else {
+			LFNODE* node = thread_info[thread_id].free_nodes.front();
+			long long current_epoch = g_epoch; // Get the current global epoch
+			for (int i = 0; i < MAX_THREADS; ++i) {
+				if (thread_info[i].local_epoch <= node->epoch) {
+					return new LFNODE(x); // Cannot reuse the node yet, as there are still active threads in the epoch when the node was freed
+				}
+			}
+			thread_info[thread_id].free_nodes.pop();
+			node->data = x;
+			node->set_next(nullptr);
+			return node; // Return a node from the thread's free list
+		}
+
 	}
 };
 
-EBR ebr;
-
-// --- LFEBRLIST (EBR 기반 락프리 리스트) ---
-
-class LFEBRLIST {
+class LFLIST {
+private:
 	LFNODE* head, * tail;
 public:
-	LFEBRLIST() {
-		head = new LFNODE(std::numeric_limits<int>::min());
-		tail = new LFNODE(std::numeric_limits<int>::max());
-		head->set_next(tail);
-	}
-	void clear() {
-		LFNODE* curr = head->get_next();
-		while (curr != tail) {
-			LFNODE* next = curr->get_next();
-			delete curr;
-			curr = next;
-		}
+	LFLIST()
+	{
+		std::cout << "Testing Lock Free Synchronization List\n";
+		head = new LFNODE{ std::numeric_limits<int>::min() };
+		tail = new LFNODE{ std::numeric_limits<int>::max() };
 		head->set_next(tail);
 	}
 
-	void find(int x, LFNODE*& pred, LFNODE*& curr) {
+	~LFLIST() {
+		clear();
+		delete head;
+		delete tail;
+	}
+
+	void clear()
+	{
+		LFNODE* current = head->get_next();
+		while (head->get_next() != tail) {
+			LFNODE* temp = head->get_next();
+			head->set_next(temp->get_next());
+			delete temp;
+		}
+	}
+
+	void find(int x, LFNODE*& pred, LFNODE*& curr)
+	{
 	retry:
 		pred = head;
 		curr = pred->get_next();
-		while (curr != tail) {
+		while (true) {
+			// Check if curr is marked as removed
 			bool removed = false;
-			LFNODE* succ = curr->get_next(&removed);
-			if (removed) {
-				if (!pred->CAS(curr, succ, false, false)) goto retry;
-				ebr.freenode(curr);
+			while (true) {
+				LFNODE* succ = curr->get_next(&removed);
+				if (false == removed) break; // If curr is not removed, break the inner loop
+				if (false == pred->CAS(curr, succ, false, false)) goto retry;
+				lf_memory_pool[thread_id].free_node(curr); // Recycle the removed node back to the memory pool
 				curr = succ;
-				continue;
 			}
 			if (curr->data >= x) break;
 			pred = curr;
-			curr = succ;
+			curr = curr->get_next();
 		}
 	}
 
-	bool Add(int x) {
-		ebr.enter();
+	bool Add(int x)
+	{
+		LFNODE* pred, * curr;
 		while (true) {
-			LFNODE* pred, * curr;
 			find(x, pred, curr);
-			if (curr->data == x) { ebr.leave(); return false; }
-			LFNODE* new_node = ebr.getnode(x);
-			new_node->set_next(curr);
-			if (pred->CAS(curr, new_node, false, false)) { ebr.leave(); return true; }
-			ebr.freenode(new_node);
+			if (curr->data == x) return false; // Element already exists
+			else {
+				LFNODE* new_node = lf_memory_pool[thread_id].get_node(x);
+				new_node->set_next(curr);
+				if (true == pred->CAS(curr, new_node, false, false))
+					return true; // Attempt to link the new node between pred and curr
+				lf_memory_pool[thread_id].free_node(new_node); // Recycle the unused node back to the memory pool							
+			}
 		}
 	}
 
-	bool Remove(int x) {
-		ebr.enter();
+	bool Remove(int x)
+	{
+		LFNODE* pred, * curr;
 		while (true) {
-			LFNODE* pred, * curr;
 			find(x, pred, curr);
-			if (curr->data != x) { ebr.leave(); return false; }
-			LFNODE* succ = curr->get_next();
-			if (!curr->CAS(succ, succ, false, true)) continue;
-			if (pred->CAS(curr, succ, false, false)) ebr.freenode(curr);
-			ebr.leave(); return true;
+			if (curr->data != x) return false; // Element already exists
+			else {
+				LFNODE* succ = curr->get_next();
+				if (false == curr->CAS(succ, succ, false, true)) continue; // Attempt to mark the node as removed
+				if (true == pred->CAS(curr, succ, false, false)) // Attempt to unlink the removed node from the list
+					lf_memory_pool[thread_id].free_node(curr); // Recycle the unused node back to the memory pool
+				return true;
+			}
 		}
 	}
 
-	bool Contains(int x) {
-		ebr.enter();
-		LFNODE* curr = head->get_next();
-		while (curr != tail && curr->data < x) curr = curr->get_next();
-		bool res = (curr != tail && curr->data == x && !curr->get_mark());
-		ebr.leave();
-		return res;
+	bool Contains(int x)
+	{
+		LFNODE* n = head;
+		while (n->data < x) {
+			n = n->get_next();
+		}
+		return (n->data == x) && (false == n->get_mark()); // Check if the node exists and is not removed
 	}
 
-	void print20() {
+	void print20()
+	{
 		LFNODE* curr = head->get_next();
-		for (int i = 0; i < 20 && curr != tail; ++i) {
+		int count = 0;
+		while (curr != tail && count < 20) {
 			std::cout << curr->data << ", ";
 			curr = curr->get_next();
+			count++;
+		}
+		std::cout << "\n";
+	}
+};
+
+class LFEBRLIST {
+private:
+	LFNODE* head, * tail;
+public:
+	LFEBRLIST()
+	{
+		std::cout << "Testing Lock Free Synchronization List\n";
+		head = new LFNODE{ std::numeric_limits<int>::min() };
+		tail = new LFNODE{ std::numeric_limits<int>::max() };
+		head->set_next(tail);
+	}
+
+	~LFEBRLIST() {
+		clear();
+		delete head;
+		delete tail;
+	}
+
+	void clear()
+	{
+		LFNODE* current = head->get_next();
+		while (head->get_next() != tail) {
+			LFNODE* temp = head->get_next();
+			head->set_next(temp->get_next());
+			delete temp;
+		}
+	}
+
+	void find(int x, LFNODE*& pred, LFNODE*& curr)
+	{
+	retry:
+		pred = head;
+		curr = pred->get_next();
+		while (true) {
+			// Check if curr is marked as removed
+			bool removed = false;
+			while (true) {
+				LFNODE* succ = curr->get_next(&removed);
+				if (false == removed) break; // If curr is not removed, break the inner loop
+				if (false == pred->CAS(curr, succ, false, false)) goto retry;
+				lf_memory_pool[thread_id].free_node(curr); // Recycle the removed node back to the memory pool
+				curr = succ;
+			}
+			if (curr->data >= x) break;
+			pred = curr;
+			curr = curr->get_next();
+		}
+	}
+
+	bool Add(int x)
+	{
+		LFNODE* pred, * curr;
+		while (true) {
+			find(x, pred, curr);
+			if (curr->data == x) return false; // Element already exists
+			else {
+				LFNODE* new_node = lf_memory_pool[thread_id].get_node(x);
+				new_node->set_next(curr);
+				if (true == pred->CAS(curr, new_node, false, false))
+					return true; // Attempt to link the new node between pred and curr
+				lf_memory_pool[thread_id].free_node(new_node); // Recycle the unused node back to the memory pool							
+			}
+		}
+	}
+
+	bool Remove(int x)
+	{
+		LFNODE* pred, * curr;
+		while (true) {
+			find(x, pred, curr);
+			if (curr->data != x) return false; // Element already exists
+			else {
+				LFNODE* succ = curr->get_next();
+				if (false == curr->CAS(succ, succ, false, true)) continue; // Attempt to mark the node as removed
+				if (true == pred->CAS(curr, succ, false, false)) // Attempt to unlink the removed node from the list
+					lf_memory_pool[thread_id].free_node(curr); // Recycle the unused node back to the memory pool
+				return true;
+			}
+		}
+	}
+
+	bool Contains(int x)
+	{
+		LFNODE* n = head;
+		while (n->data < x) {
+			n = n->get_next();
+		}
+		return (n->data == x) && (false == n->get_mark()); // Check if the node exists and is not removed
+	}
+
+	void print20()
+	{
+		LFNODE* curr = head->get_next();
+		int count = 0;
+		while (curr != tail && count < 20) {
+			std::cout << curr->data << ", ";
+			curr = curr->get_next();
+			count++;
 		}
 		std::cout << "\n";
 	}
@@ -190,78 +1088,149 @@ public:
 
 LFEBRLIST my_set;
 
-// --- 벤치마크 및 테스트 로직 ---
+#include <array>
 
-struct HISTORY {
-	int op; int i_value; bool o_value;
+class HISTORY {
+public:
+	int op;
+	int i_value;
+	bool o_value;
 	HISTORY(int o, int i, bool re) : op(o), i_value(i), o_value(re) {}
 };
+
 std::array<std::vector<HISTORY>, MAX_THREADS> history;
 
-void check_history(int num_threads) {
-	std::array<int, RANGE> survive = {};
+void check_history(int num_threads)
+{
+	std::array <int, RANGE> survive = {};
 	std::cout << "Checking Consistency : ";
+	if (history[0].size() == 0) {
+		std::cout << "No history.\n";
+		return;
+	}
 	for (int i = 0; i < num_threads; ++i) {
 		for (auto& op : history[i]) {
-			if (!op.o_value) continue;
+			if (false == op.o_value) continue;
+			if (op.op == 3) continue;
 			if (op.op == 0) survive[op.i_value]++;
-			else if (op.op == 1) survive[op.i_value]--;
+			if (op.op == 1) survive[op.i_value]--;
 		}
 	}
 	for (int i = 0; i < RANGE; ++i) {
-		if (survive[i] < 0 || survive[i] > 1) { std::cout << "ERROR at " << i << "\n"; exit(-1); }
-		if (survive[i] == 1 && !my_set.Contains(i)) { std::cout << "MISSING " << i << "\n"; exit(-1); }
-		if (survive[i] == 0 && my_set.Contains(i)) { std::cout << "SURPLUS " << i << "\n"; exit(-1); }
+		int val = survive[i];
+		if (val < 0) {
+			std::cout << "ERROR. The value " << i << " removed while it is not in the set.\n";
+			exit(-1);
+		}
+		else if (val > 1) {
+			std::cout << "ERROR. The value " << i << " is added while the set already have it.\n";
+			exit(-1);
+		}
+		else if (val == 0) {
+			if (my_set.Contains(i)) {
+				std::cout << "ERROR. The value " << i << " should not exists.\n";
+				exit(-1);
+			}
+		}
+		else if (val == 1) {
+			if (false == my_set.Contains(i)) {
+				std::cout << "ERROR. The value " << i << " shoud exists.\n";
+				exit(-1);
+			}
+		}
 	}
 	std::cout << " OK\n";
 }
 
-void benchmark_check(int num_threads, int tid) {
-	thread_id = tid;
+void benchmark_check(int num_threads, int th_id)
+{
+	thread_id = th_id;
 	for (int i = 0; i < NUM_TEST / num_threads; ++i) {
-		int op = rand() % 3; int v = rand() % RANGE;
-		if (op == 0) history[tid].emplace_back(0, v, my_set.Add(v));
-		else if (op == 1) history[tid].emplace_back(1, v, my_set.Remove(v));
-		else history[tid].emplace_back(2, v, my_set.Contains(v));
+		int op = rand() % 3;
+		switch (op) {
+		case 0: {
+			int v = rand() % RANGE;
+			history[th_id].emplace_back(0, v, my_set.Add(v));
+			break;
+		}
+		case 1: {
+			int v = rand() % RANGE;
+			history[th_id].emplace_back(1, v, my_set.Remove(v));
+			break;
+		}
+		case 2: {
+			int v = rand() % RANGE;
+			history[th_id].emplace_back(2, v, my_set.Contains(v));
+			break;
+		}
+		}
 	}
+	memory_pool[thread_id].recycle_nodes();
+}
+void benchmark(int num_threads, int tid)
+{
+	thread_id = tid;
+	const int LOOP = NUM_TEST / num_threads;
+	for (int i = 0; i < LOOP; ++i) {
+		int value = rand() % 1000;
+		int op = rand() % 3;
+		switch (op) {
+		case 0:
+			my_set.Add(value);
+			break;
+		case 1:
+			my_set.Remove(value);
+			break;
+		case 2:
+			my_set.Contains(value);
+			break;
+		}
+	}
+	memory_pool[thread_id].recycle_nodes(); // Recycle nodes back to the memory pool after the benchmark
 }
 
-void benchmark(int num_threads, int tid) {
-	thread_id = tid;
-	for (int i = 0; i < NUM_TEST / num_threads; ++i) {
-		int op = rand() % 3; int v = rand() % RANGE;
-		if (op == 0) my_set.Add(v);
-		else if (op == 1) my_set.Remove(v);
-		else my_set.Contains(v);
-	}
-}
-
-int main() {
+int main()
+{
 	using namespace std::chrono;
-	std::cout << "Starting Error Check.\n";
-	for (int n = 1; n <= MAX_THREADS; n *= 2) {
+
+	std::cout << "Strting Error Check.\n";
+	for (int num_threads = 1; num_threads <= MAX_THREADS; num_threads *= 2) {
+		std::vector<std::thread> threads;
 		for (auto& h : history) h.clear();
-		std::vector<std::thread> ths;
-		auto start = high_resolution_clock::now();
-		for (int j = 0; j < n; ++j) ths.emplace_back(benchmark_check, n, j);
-		for (auto& t : ths) t.join();
-		auto dur = duration_cast<milliseconds>(high_resolution_clock::now() - start).count();
+		auto start_time = high_resolution_clock::now();
+		for (int j = 0; j < num_threads; ++j) {
+			threads.emplace_back(benchmark_check, num_threads, j);
+		}
+		for (auto& thread : threads) {
+			thread.join();
+		}
+		auto end_time = high_resolution_clock::now();
+		auto elapsed = end_time - start_time;
+		auto exec_ms = duration_cast<milliseconds>(elapsed).count();
 		my_set.print20();
-		std::cout << "Threads: " << n << ", Time: " << dur << "ms\n";
-		check_history(n);
+		std::cout << "Threads: " << num_threads << ", Time: " << exec_ms << " seconds\n";
+		check_history(num_threads);
 		my_set.clear();
 	}
 
-	std::cout << "Starting Performance Check.\n";
-	for (int n = 1; n <= MAX_THREADS; n *= 2) {
-		std::vector<std::thread> ths;
-		auto start = high_resolution_clock::now();
-		for (int j = 0; j < n; ++j) ths.emplace_back(benchmark, n, j);
-		for (auto& t : ths) t.join();
-		auto dur = duration_cast<milliseconds>(high_resolution_clock::now() - start).count();
+	for (auto& h : history) h.clear();
+	std::cout << "Strting Performance Check.\n";
+	for (int num_threads = 1; num_threads <= MAX_THREADS; num_threads *= 2) {
+		std::vector<std::thread> threads;
+		auto start_time = high_resolution_clock::now();
+		for (int j = 0; j < num_threads; ++j) {
+			threads.emplace_back(benchmark, num_threads, j);
+		}
+		for (auto& thread : threads) {
+			thread.join();
+		}
+		auto end_time = high_resolution_clock::now();
+		auto elapsed = end_time - start_time;
+		auto exec_ms = duration_cast<milliseconds>(elapsed).count();
 		my_set.print20();
-		std::cout << "Threads: " << n << ", Time: " << dur << "ms\n";
+		std::cout << "Threads: " << num_threads << ", Time: " << exec_ms << " seconds\n";
 		my_set.clear();
+		std::string temp;
+		std::getline(std::cin, temp);
 	}
-	return 0;
 }
