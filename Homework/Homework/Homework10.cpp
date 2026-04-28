@@ -983,6 +983,8 @@ public:
 	}
 };
 
+EBR ebr;
+
 class LFEBRLIST {
 private:
 	LFNODE* head, * tail;
@@ -1023,7 +1025,7 @@ public:
 				LFNODE* succ = curr->get_next(&removed);
 				if (false == removed) break; // If curr is not removed, break the inner loop
 				if (false == pred->CAS(curr, succ, false, false)) goto retry;
-				lf_memory_pool[thread_id].free_node(curr); // Recycle the removed node back to the memory pool
+				ebr.freenode(curr); // Recycle the removed node back to the memory pool
 				curr = succ;
 			}
 			if (curr->data >= x) break;
@@ -1035,15 +1037,23 @@ public:
 	bool Add(int x)
 	{
 		LFNODE* pred, * curr;
+		ebr.enter();
 		while (true) {
 			find(x, pred, curr);
-			if (curr->data == x) return false; // Element already exists
+			if (curr->data == x)
+			{
+				ebr.leave();
+				return false;
+			}
 			else {
-				LFNODE* new_node = lf_memory_pool[thread_id].get_node(x);
+				LFNODE* new_node = ebr.getnode(x);
 				new_node->set_next(curr);
 				if (true == pred->CAS(curr, new_node, false, false))
-					return true; // Attempt to link the new node between pred and curr
-				lf_memory_pool[thread_id].free_node(new_node); // Recycle the unused node back to the memory pool							
+				{
+					ebr.leave();
+					return true;
+				}
+				ebr.freenode(new_node); // Recycle the unused node back to the memory pool							
 			}
 		}
 	}
@@ -1051,15 +1061,22 @@ public:
 	bool Remove(int x)
 	{
 		LFNODE* pred, * curr;
+		ebr.enter();
 		while (true) {
 			find(x, pred, curr);
-			if (curr->data != x) return false; // Element already exists
+			if (curr->data != x)
+			{
+				ebr.leave();
+				return false;
+			}
 			else {
 				LFNODE* succ = curr->get_next();
 				if (false == curr->CAS(succ, succ, false, true)) continue; // Attempt to mark the node as removed
 				if (true == pred->CAS(curr, succ, false, false)) // Attempt to unlink the removed node from the list
-					lf_memory_pool[thread_id].free_node(curr); // Recycle the unused node back to the memory pool
+					ebr.freenode(curr); // Recycle the unused node back to the memory pool
+				ebr.leave();
 				return true;
+
 			}
 		}
 	}
