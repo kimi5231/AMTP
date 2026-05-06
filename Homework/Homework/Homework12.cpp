@@ -190,7 +190,6 @@ public:
 					int value = next->data;
 					if (false == CAS(&head, first, next))
 						continue; // Failed to swing the head to the next node, retry
-					delete first; // Free the old head node
 					return value; // Dequeue successful
 				}
 			}
