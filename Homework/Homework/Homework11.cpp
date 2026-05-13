@@ -7,7 +7,7 @@
 #include <set>
 
 constexpr int MAX_THREADS = 32;
-constexpr int NUM_TEST = 400'0000;
+constexpr int NUM_TEST = 20000;
 constexpr int RANGE = 1000;
 
 
@@ -1182,18 +1182,20 @@ public:
 	LOGNODE(INVOCATION inv) : m_inv(inv), m_seq(0), m_next(nullptr) {}
 };
 
-class LFU_SET {
+class WFU_SET {
+	LOGNODE* announce[MAX_THREADS];
 	LOGNODE* head[MAX_THREADS];
 	LOGNODE* tail;
 public:
-	LFU_SET() {
+	WFU_SET() {
 		tail = new LOGNODE(INVOCATION(CONTAINS, 0)); // dummy
 		for (int i = 0; i < MAX_THREADS; ++i) {
 			head[i] = tail;
+			announce[i] = tail;
 		}
 	}
 
-	~LFU_SET()
+	~WFU_SET()
 	{
 		while (nullptr != tail) {
 			LOGNODE* temp = tail;
@@ -1215,9 +1217,15 @@ public:
 	RESPONSE apply(INVOCATION inv)
 	{
 		int i = thread_id;
-		auto prefer = new LOGNODE(inv);
-		while (prefer->m_seq == 0) {
+		announce[i] = new LOGNODE(inv);
+		while (announce[i]->m_seq == 0) {
 			LOGNODE* before = max_head();
+			LOGNODE* help = announce[(before->m_seq + 1) % MAX_THREADS];
+			LOGNODE* prefer;
+			if (help != nullptr && help != tail && help->m_seq == 0)
+				prefer = help;
+			else
+				prefer = announce[i];
 			LOGNODE* after = before->decide_next.decide(prefer);
 			before->m_next = after;
 			after->m_seq = before->m_seq + 1;
@@ -1226,11 +1234,12 @@ public:
 
 		SEQ_SET seq_set;
 		LOGNODE* curr = tail->m_next;
-		while (curr != prefer) {
+		while (curr != announce[i]) {
 			seq_set.apply(curr->m_inv);
 			curr = curr->m_next;
 		}
-		if (prefer->m_seq % 1000 == 0)
+		head[i] == announce[i];
+		if (announce[i]->m_seq % 1000 == 0)
 			std::cout << ".";
 		return seq_set.apply(inv);
 	};
@@ -1239,6 +1248,7 @@ public:
 	{
 		for (int i = 0; i < MAX_THREADS; ++i) {
 			head[i] = tail;
+			announce[i] = tail;
 		}
 		LOGNODE* curr = tail->m_next;
 		while (nullptr != curr) {
@@ -1247,6 +1257,7 @@ public:
 			delete temp;
 		}
 		tail->m_next = nullptr;
+		tail->m_seq = 1;
 		tail->decide_next.clear();
 	}
 
@@ -1266,8 +1277,8 @@ public:
 // 벤치 마킹
 class STD_SET {
 private:
-	SEQ_SET m_set;
-	//LFU_SET m_set;
+	//SEQ_SET m_set;
+	WFU_SET m_set;
 	//DUMMY_MTX mtx;
 public:
 	STD_SET() {}
@@ -1304,7 +1315,7 @@ public:
 	}
 };
 
-LFEBRLIST my_set;
+STD_SET my_set;
 
 #include <array>
 
