@@ -1238,7 +1238,7 @@ public:
 			seq_set.apply(curr->m_inv);
 			curr = curr->m_next;
 		}
-		head[i] == announce[i];
+		head[i] = announce[i];
 		if (announce[i]->m_seq % 1000 == 0)
 			std::cout << ".";
 		return seq_set.apply(inv);
@@ -1257,7 +1257,7 @@ public:
 			delete temp;
 		}
 		tail->m_next = nullptr;
-		tail->m_seq = 1;
+		tail->m_seq = 0;
 		tail->decide_next.clear();
 	}
 
