@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="TBB/TBB.vcxproj" Id="10e41821-51eb-4b9a-ab3c-82ba4ea80072" />
+</Solution>
