@@ -156,7 +156,4 @@ int main()
 
 		cout << "\nTBB concurrent_map Time : " << duration_cast<milliseconds>(du).count() << endl;
 	}
-
-	concurrent_queue<int> cq;
-	cq.try_pop(int &result)
 }
